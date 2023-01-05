@@ -6,6 +6,8 @@ from termcolor import colored
 from elasticsearch_dsl import Search
 import elasticsearch
 
+CACHE = {}
+
 logging.basicConfig(
     level=logging.CRITICAL,
     format="%(filename)s: "
@@ -52,16 +54,32 @@ def cli(context, debug):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        
         context.obj['elastic'] = elasticsearch.Elasticsearch(config["elasticsearch"]["url"], verify_certs=False)
         context.obj['dynamodb'] = boto3.resource("dynamodb", endpoint_url=config["dynamodb"]["url"])
 
 
-def check_elastic(elastic, table, eid, did, eid_value):
-    return True
-
+def check_elastic(elastic, index, eid, eid_value):
+    if eid_value in CACHE:
+        return CACHE[eid_value]
+    
+    query = {
+        'size' : 1,
+        'query': {
+            'match' : {
+            }
+        }
+    }
+    query['query']['match'] = {}
+    query['query']['match'][eid] = eid_value
+    results = elastic.search(index=index, body=query)
+    
+    result = results['hits']['total'] == 1
+    CACHE[eid_value] = result
+    
+    return result
 
 def check_dynamo(dynamodb, table, eid, did, eid_value):
-    import boto3
     from boto3.dynamodb.conditions import Key
 
     table = dynamodb.Table(table)
@@ -142,12 +160,10 @@ def dyn2es(context, eid, did, table, index, csv, out):
             dynamo_misses = 0
             for doc in scan(_table):
                 did_value = doc[did]
-
-                if not check_elastic(context.obj['elastic'], table, eid, did, did_value):
+                if not check_elastic(context.obj['elastic'], index, eid, did_value):
                     dynamo_misses += 1
-
                     writer.writerow([table, did, did_value])
-
+                    
                 bar.next()
 
             x.add_row([table, index, eid, did, dynamo_misses, _total])
