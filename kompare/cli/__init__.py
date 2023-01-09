@@ -60,23 +60,24 @@ def cli(context, debug):
 
 
 def check_elastic(elastic, index, eid, eid_value):
+    import math
+    
     if eid_value in CACHE:
         return CACHE[eid_value]
     
     query = {
-        'size' : 1,
         'query': {
             'match' : {
             }
         }
     }
     query['query']['match'] = {}
-    query['query']['match'][eid] = eid_value
+    query['query']['match'][eid] = int(abs(eid_value))
     results = elastic.search(index=index, body=query)
     
-    result = results['hits']['total'] == 1
+    result = results['hits']['total']['value'] == 1
     CACHE[eid_value] = result
-    
+    logging.debug("check_elastic: returning %s", result)
     return result
 
 def check_dynamo(dynamodb, table, eid, did, eid_value):
@@ -143,7 +144,7 @@ def dyn2es(context, eid, did, table, index, csv, out):
 
     x = PrettyTable()
 
-    names = ["Dynamo Table", "ES Field", "DynamoDB Field", "Elastic Index", "Misses", "Total"]
+    names = ["Dynamo Table", "Elastic Index", "ES Field", "DynamoDB Field",  "Misses", "Total"]
 
     x.field_names = names
 
