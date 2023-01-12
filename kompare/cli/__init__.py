@@ -72,15 +72,17 @@ def check_elastic(elastic, index, eid, eid_value):
         }
     }
     query['query']['match'] = {}
-    query['query']['match'][eid] = int(abs(eid_value))
+    query['query']['match'][eid] = eid_value
     results = elastic.search(index=index, body=query)
     
-    result = results['hits']['total']['value'] == 1
-    CACHE[eid_value] = result
+    result = results['hits']['total']['value'] >= 1
+    if result:
+        CACHE[eid_value] = result
+        
     logging.debug("check_elastic: returning %s", result)
     return result
 
-def check_dynamo(dynamodb, table, eid, did, eid_value):
+def check_dynamo(dynamodb, table, did, eid_value):
     from boto3.dynamodb.conditions import Key
 
     table = dynamodb.Table(table)
@@ -98,7 +100,55 @@ def scan(table, **kwargs):
         response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'], **kwargs)
         yield from response['Items']
 
+@cli.command(name="check")
+@click.option("-f", "--field", required=True, help="Document id field name")
+@click.option("-i", "--id", required=True, help="ID of document")
+@click.option("-t", "--table", required=False, help="DynamoDB table")
+@click.option("-i", "--index", required=False, help="ElasticSearch index")
+@click.option("-s", "--source", type=click.Choice(['elastic', 'dynamo'], case_sensitive=False), help="Database source")
+@click.pass_context
+def check(context, field, id, table, index, source):
+    """Check if a document exists"""
+    print(field, id, source)
+    if source == 'elastic':
+        print(check_elastic(index, field, id))
+    if source == 'dynamo':
+        print(check_dynamo(table,field,id))
+    
+@cli.command(name="scan")
+@click.option("-did", required=True, help="DynamoDB document id field name")
+@click.option("-t", "--table", required=True, help="DynamoDB table")
+@click.option("-o", "--out", required=True, help="Name of output file")
+@click.pass_context
+def scan_ids(context, did, table, out):
+    """ List dynamodb tables """
+    import boto3
+    import warnings
+    import csv
+    from progress.bar import Bar
 
+    dynamodb = context.obj['dynamodb']
+    
+    _table = dynamodb.Table(table)
+    _total = _table.item_count
+    bar = Bar('Scanning', max=_total)
+    
+    with open(out, 'w') as csvfile:
+
+        writer = csv.writer(csvfile)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            seen = []
+            for doc in scan(_table):
+                did_value = doc[did]
+                if did_value not in seen:
+                    seen += [did_value]
+                    writer.writerow([table, did, did_value])
+                bar.next()
+                    
+    click.echo("Scan complete.")
+            
+        
 @cli.command(name="tables")
 @click.pass_context
 def list_tables(context):
@@ -210,7 +260,7 @@ def es2dyn(context, eid, did, table, index, csv, out):
             for hit in search.scan():
                 if eid in hit:
                     eid_value = hit[eid]
-                    if not check_dynamo(context.obj["dynamodb"], table, eid, did, eid_value):
+                    if not check_dynamo(context.obj["dynamodb"], table, did, eid_value):
                         dynamo_misses += 1
 
                         writer.writerow([table, did, eid_value])
