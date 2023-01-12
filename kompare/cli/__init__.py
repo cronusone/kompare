@@ -60,7 +60,6 @@ def cli(context, debug):
 
 
 def check_elastic(elastic, index, eid, eid_value):
-    import math
     
     if eid_value in CACHE:
         return CACHE[eid_value]
@@ -74,10 +73,13 @@ def check_elastic(elastic, index, eid, eid_value):
     query['query']['match'] = {}
     query['query']['match'][eid] = eid_value
     results = elastic.search(index=index, body=query)
-    
+    logging.debug("check_elastic: %s", results)
     result = results['hits']['total']['value'] >= 1
-    if result:
-        CACHE[eid_value] = result
+    if result == 0:
+        return False
+    
+    result = results['hits']['hits'][0]['_source'][eid] == eid_value
+    CACHE[eid_value] = result
         
     logging.debug("check_elastic: returning %s", result)
     return result
@@ -102,18 +104,22 @@ def scan(table, **kwargs):
 
 @cli.command(name="check")
 @click.option("-f", "--field", required=True, help="Document id field name")
-@click.option("-i", "--id", required=True, help="ID of document")
+@click.option("-v", "--value", required=True, help="ID of document")
 @click.option("-t", "--table", required=False, help="DynamoDB table")
 @click.option("-i", "--index", required=False, help="ElasticSearch index")
 @click.option("-s", "--source", type=click.Choice(['elastic', 'dynamo'], case_sensitive=False), help="Database source")
 @click.pass_context
-def check(context, field, id, table, index, source):
+def check(context, field, value, table, index, source):
     """Check if a document exists"""
-    print(field, id, source)
-    if source == 'elastic':
-        print(check_elastic(index, field, id))
-    if source == 'dynamo':
-        print(check_dynamo(table,field,id))
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore") 
+        if source == 'elastic':
+            print(check_elastic(context.obj['elastic'], index, field, value))
+        if source == 'dynamo':
+            print(check_dynamo(context.obj["dynamodb"], table,field,value))
     
 @cli.command(name="scan")
 @click.option("-did", required=True, help="DynamoDB document id field name")
@@ -161,10 +167,10 @@ def list_tables(context):
         print(table.name)
 
 
-@cli.command(name="indices")
+@cli.command(name="indexes")
 @click.pass_context
-def list_indices(context):
-    """ List elasticsearch indices """
+def list_indexes(context):
+    """ List elasticsearch indexesß """
     import warnings
 
     with warnings.catch_warnings():
