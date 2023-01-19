@@ -62,22 +62,26 @@ def cli(context, debug):
 def check_elastic(elastic, index, eid, eid_value):
     
     if eid_value in CACHE:
+        logging.debug("check_elastic: returning from cache %s", eid_value)
         return CACHE[eid_value]
     
     query = {
         'query': {
-            'match' : {
+            'term' : {
             }
         }
     }
-    query['query']['match'] = {}
-    query['query']['match'][eid] = eid_value
+    query['query']['term'] = {}
+    query['query']['term'][eid+".keyword"] = eid_value
     results = elastic.search(index=index, body=query)
     logging.debug("check_elastic: %s", results)
+    logging.debug("FOUND %s hits", results['hits']['total']['value'])
     result = results['hits']['total']['value'] >= 1
     if result == 0:
         return False
     
+    for r in results['hits']['hits']:
+        logging.info(r['_source'][eid])
     result = results['hits']['hits'][0]['_source'][eid] == eid_value
     CACHE[eid_value] = result
         
@@ -187,10 +191,11 @@ def list_indexes(context):
 @click.option("-did", required=True, help="DynamoDB document id field name")
 @click.option("-t", "--table", required=True, help="DynamoDB table")
 @click.option("-i", "--index", required=True, help="ElasticSearch index")
+@click.option("-f", "--file", required=False, help="Dynamo ID file created from scan")
 @click.option("-c", "--csv", required=False, is_flag=True, default=False, help="Output all differences in CSV file")
 @click.option("-o", "--out", required=False, default="kompare.out", help="CSV output filename")
 @click.pass_context
-def dyn2es(context, eid, did, table, index, csv, out):
+def dyn2es(context, eid, did, table, index, file, csv, out):
     """Scan dynamodb and find matches in elasticsearch"""
     import boto3
     from prettytable import PrettyTable
@@ -210,18 +215,38 @@ def dyn2es(context, eid, did, table, index, csv, out):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
-            dynamodb = context.obj['dynamodb']
-            _table = dynamodb.Table(table)
-            _total = _table.item_count
-            bar = Bar('Scanning', max=_total)
             dynamo_misses = 0
-            for doc in scan(_table):
-                did_value = doc[did]
-                if not check_elastic(context.obj['elastic'], index, eid, did_value):
-                    dynamo_misses += 1
-                    writer.writerow([table, did, did_value])
+            if file:
+                with open(file, 'r') as idfile:
+                    idcsv = csv.reader(idfile)
+                    _total = sum(1 for row in idcsv)
                     
-                bar.next()
+                with open(file, 'r') as idfile:
+                    idcsv = csv.reader(idfile)
+                    
+                    bar = Bar('Scanning', max=_total)
+                    idcsv = csv.reader(idfile)
+                    logging.debug("file mode: %s",_total)
+                    for row in idcsv:
+                        logging.debug("ROW %s",row)
+                        did = row[2]
+                        if not check_elastic(context.obj['elastic'], index, eid, did):
+                            dynamo_misses += 1
+                            writer.writerow([table, did, did])
+                        logging.debug("Checking elastic")
+                        bar.next()
+            else:
+                dynamodb = context.obj['dynamodb']
+                _table = dynamodb.Table(table)
+                _total = _table.item_count
+                bar = Bar('Scanning', max=_total)
+                for doc in scan(_table):
+                    did_value = doc[did]
+                    if not check_elastic(context.obj['elastic'], index, eid, did_value):
+                        dynamo_misses += 1
+                        writer.writerow([table, did, did_value])
+                        
+                    bar.next()
 
             x.add_row([table, index, eid, did, dynamo_misses, _total])
             print()

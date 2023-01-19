@@ -18,7 +18,7 @@ When you run elasticsearch container you need to copy the password it shows in t
 ```bash
 $ more kompare.ini 
 [elasticsearch]
-url=https://elastic:PASSWORD@localhost:9200
+url=https://USERNAME:PASSWORD@HOSTNAME:443
 
 [dynamodb]
 url=http://localhost:8009
