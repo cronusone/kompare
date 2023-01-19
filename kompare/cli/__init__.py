@@ -131,7 +131,7 @@ def check(context, field, value, table, index, source):
 @click.option("-o", "--out", required=True, help="Name of output file")
 @click.pass_context
 def scan_ids(context, did, table, out):
-    """ List dynamodb tables """
+    """ Scan dynamo table and store id's in a file """
     import boto3
     import warnings
     import csv
