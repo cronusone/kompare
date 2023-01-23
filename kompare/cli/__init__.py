@@ -192,10 +192,10 @@ def list_indexes(context):
 @click.option("-t", "--table", required=True, help="DynamoDB table")
 @click.option("-i", "--index", required=True, help="ElasticSearch index")
 @click.option("-f", "--file", required=False, help="Dynamo ID file created from scan")
-@click.option("-c", "--csv", required=False, is_flag=True, default=False, help="Output all differences in CSV file")
 @click.option("-o", "--out", required=False, default="kompare.out", help="CSV output filename")
+@click.option("-s", "--sync", required=False, is_flag=True, default=False, help="Sync missing documents to elasticsearch")
 @click.pass_context
-def dyn2es(context, eid, did, table, index, file, csv, out):
+def dyn2es(context, eid, did, table, index, file, out, sync):
     """Scan dynamodb and find matches in elasticsearch"""
     import boto3
     from prettytable import PrettyTable
@@ -229,10 +229,10 @@ def dyn2es(context, eid, did, table, index, file, csv, out):
                     logging.debug("file mode: %s",_total)
                     for row in idcsv:
                         logging.debug("ROW %s",row)
-                        did = row[2]
+                        _did = row[2]
                         if not check_elastic(context.obj['elastic'], index, eid, did):
                             dynamo_misses += 1
-                            writer.writerow([table, did, did])
+                            writer.writerow([table, index, eid, did, _did])
                         logging.debug("Checking elastic")
                         bar.next()
             else:
@@ -240,14 +240,27 @@ def dyn2es(context, eid, did, table, index, file, csv, out):
                 _table = dynamodb.Table(table)
                 _total = _table.item_count
                 bar = Bar('Scanning', max=_total)
+                _docs = []
+                
                 for doc in scan(_table):
                     did_value = doc[did]
                     if not check_elastic(context.obj['elastic'], index, eid, did_value):
                         dynamo_misses += 1
-                        writer.writerow([table, did, did_value])
-                        
+                        writer.writerow([table, index, eid, did, did_value])
+                        if sync and len(_docs) == 100:
+                            logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(_docs)), index)
+                            context.obj['elastic'].bulk((context.obj['elastic'].index_op(doc, id=doc[did]) for doc in _docs),
+                                    index=index,
+                                    doc_type='_doc')
+                            _docs.clear()
+
                     bar.next()
 
+            if sync and len(_docs):
+                logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(_docs)), index)
+                context.obj['elastic'].bulk((context.obj['elastic'].index_op(doc, id=doc[did]) for doc in _docs),
+                                    index=index,
+                                    doc_type='_doc')
             x.add_row([table, index, eid, did, dynamo_misses, _total])
             print()
             print(x)
