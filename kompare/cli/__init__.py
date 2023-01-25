@@ -5,6 +5,7 @@ import click
 from termcolor import colored
 from elasticsearch_dsl import Search
 import elasticsearch
+from elasticsearch import helpers
 
 CACHE = {}
 
@@ -114,40 +115,17 @@ def scan(table, **kwargs):
 @click.option("-o", "--out", required=True, default="kompare-check.csv", help="Name of output file")
 @click.option("-in", "--infile", required=False, default=None, help="Scan output file containing dynamoids")
 @click.option("-s", "--source", type=click.Choice(['elastic', 'dynamo'], case_sensitive=False), help="Database source")
-@click.option("-s", "--sync", required=False, is_flag=True, default=False, help="Sync missing documents to elasticsearch")
+@click.option("-sy", "--sync", required=False, is_flag=True, default=False, help="Sync missing documents to elasticsearch")
 @click.pass_context
 def check(context, field, value, table, index, out, infile, source, sync):
     """Check if a document exists"""
     import csv
     import warnings
     from progress.bar import Bar
+    from boto3.dynamodb.conditions import Key
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore") 
-        
-        if infile and sync:
-            with open(infile, 'r') as csvfile:
-                reader = csv.reader(csvfile)
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-
-                    for row in reader:
-                        # [table, index, eid, did, did_value]
-                        r_table = row[0]
-                        r_index = row[1]
-                        r_eid = row[2]
-                        r_did = row[3]
-                        r_value = row[4]
-                        
-                        dynamodb = context.obj['dynamodb']
-                        _table = dynamodb.Table(r_table)
-                        response = table.query(
-                            KeyConditionExpression=Key(r_did).eq(r_value)
-                        )
-                        logging.info("%s", response)
-                        
-                        # Sync to elastic here
-        
         
         if not infile:
             if source == 'elastic':
@@ -172,18 +150,76 @@ def check(context, field, value, table, index, out, infile, source, sync):
                         writer = csv.writer(csvfile)
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore")
+                            _docs = []
                             for row in idcsv:
                                 r_table = row[0]
                                 r_index = row[1]
                                 r_eid = row[2]
                                 r_did = row[3]
                                 r_value = row[4]
+                                dynamodb = context.obj['dynamodb']
+                                _table = dynamodb.Table(r_table)
                                 logging.debug("ROW %s",row)
                                 logging.debug("Checking elastic")
                                 if not check_elastic(context.obj['elastic'], r_index, r_eid, r_value):
                                     dynamo_misses += 1
-                                    writer.writerow([r_index, r_eid,r_value])
+                                    writer.writerow(row)
+                                    _docs.append(row)
+                                    if sync and len(_docs) == 100:
+                                        sync_docs = []
+                                        for sync_doc in _docs:
+                                            try:
+                                                _r_table = sync_doc[0]
+                                                _r_index = sync_doc[1]
+                                                _r_eid = sync_doc[2]
+                                                _r_did = sync_doc[3]
+                                                _r_value = sync_doc[4]
+                                                logging.debug("Fetching document %s:%s from table %s", _r_did, _r_value, _r_table)
+                                                response = _table.query(
+                                                    KeyConditionExpression=Key(_r_did).eq(_r_value)
+                                                )
+                                                s_doc = {
+                                                    "_index": _r_index,
+                                                    "_type" : "_doc",
+                                                    "_id"   : _r_value,
+                                                    "_source": response['Items'][0]
+                                                }
+                                                sync_docs.append(s_doc)
+                                            
+                                            except Exception as ex:
+                                                logging.error(ex)
+                                                
+                                        helpers.bulk(context.obj['elastic'], sync_docs)
+                                        _docs.clear()
                                     
+                                    if len(_docs):
+                                        sync_docs = []
+                                        for sync_doc in _docs:
+                                            try:
+                                                _r_table = sync_doc[0]
+                                                _r_index = sync_doc[1]
+                                                _r_eid = sync_doc[2]
+                                                _r_did = sync_doc[3]
+                                                _r_value = sync_doc[4]
+                                                logging.debug("Fetching document %s:%s from table %s", _r_did, _r_value, _r_table)
+                                                response = _table.query(
+                                                    KeyConditionExpression=Key(_r_did).eq(_r_value)
+                                                )
+                                                s_doc = {
+                                                    "_index": _r_index,
+                                                    "_type" : "_doc",
+                                                    "_id"   : _r_value,
+                                                    "_source": response['Items'][0]
+                                                }
+                                                sync_docs.append(s_doc)
+                                            
+                                            except Exception as ex:
+                                                logging.error(ex)
+                                                
+                                        logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(sync_docs)), _r_index)
+                                        
+                                        helpers.bulk(context.obj['elastic'], sync_docs)
+                                        
                                 bar.next()
               
     
@@ -295,45 +331,31 @@ def dyn2es(context, eid, did, table, index, file, out):
                         logging.debug("Checking elastic")
                         bar.next()
 
-    if False:
-        pass       
-    else:
-        with open(out, 'w') as csvfile:
 
-            writer = csv.writer(csvfile)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
+    with open(out, 'w') as csvfile:
 
-                dynamo_misses = 0
+        writer = csv.writer(csvfile)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
 
-                dynamodb = context.obj['dynamodb']
-                _table = dynamodb.Table(table)
-                _total = _table.item_count
-                bar = Bar('Scanning', max=_total)
-                _docs = []
-                
-                for doc in scan(_table):
-                    did_value = doc[did]
-                    if not check_elastic(context.obj['elastic'], index, eid, did_value):
-                        dynamo_misses += 1
-                        writer.writerow([table, index, eid, did, did_value])
-                        if sync and len(_docs) == 100:
-                            logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(_docs)), index)
-                            context.obj['elastic'].bulk((context.obj['elastic'].index_op(doc, id=doc[did]) for doc in _docs),
-                                    index=index,
-                                    doc_type='_doc')
-                            _docs.clear()
+            dynamo_misses = 0
 
-                    bar.next()
+            dynamodb = context.obj['dynamodb']
+            _table = dynamodb.Table(table)
+            _total = _table.item_count
+            bar = Bar('Scanning', max=_total)
+            
+            for doc in scan(_table):
+                did_value = doc[did]
+                if not check_elastic(context.obj['elastic'], index, eid, did_value):
+                    dynamo_misses += 1
+                    writer.writerow([table, index, eid, did, did_value])
 
-                if sync and len(_docs):
-                    logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(_docs)), index)
-                    context.obj['elastic'].bulk((context.obj['elastic'].index_op(doc, id=doc[did]) for doc in _docs),
-                                        index=index,
-                                        doc_type='_doc')
-                x.add_row([table, index, eid, did, dynamo_misses, _total])
-                print()
-                print(x)
+                bar.next()
+
+            x.add_row([table, index, eid, did, dynamo_misses, _total])
+            print()
+            print(x)
 
 
 @cli.command()
