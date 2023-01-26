@@ -223,12 +223,17 @@ def check(context, field, value, table, index, out, infile, source, sync):
                                 bar.next()
               
     
+def dedupe(table, docid):
+    pass
+
+    
 @cli.command(name="scan")
 @click.option("-did", required=True, help="DynamoDB document id field name")
 @click.option("-t", "--table", required=True, help="DynamoDB table")
 @click.option("-o", "--out", required=True, help="Name of output file")
+@click.option("-d", "--dedupe", required=False, is_flag=True, default=False, help="Remove older duplicate doc id's")
 @click.pass_context
-def scan_ids(context, did, table, out):
+def scan_ids(context, did, table, out, dedupe):
     """ Scan dynamo table and store id's in a file """
     import boto3
     import warnings
@@ -249,6 +254,9 @@ def scan_ids(context, did, table, out):
             seen = []
             for doc in scan(_table):
                 did_value = doc[did]
+                if dedupe:
+                    dedupe(_table, did, did_value)
+                    
                 if did_value not in seen:
                     seen += [did_value]
                     writer.writerow([table, did, did_value])
