@@ -339,31 +339,34 @@ def dyn2es(context, eid, did, table, index, file, out):
                         logging.debug("Checking elastic")
                         bar.next()
 
+                    x.add_row([table, index, eid, did, dynamo_misses, _total])
+                    print()
+                    print(x)
+    else:
+        with open(out, 'w') as csvfile:
 
-    with open(out, 'w') as csvfile:
+            writer = csv.writer(csvfile)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
 
-        writer = csv.writer(csvfile)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+                dynamo_misses = 0
 
-            dynamo_misses = 0
+                dynamodb = context.obj['dynamodb']
+                _table = dynamodb.Table(table)
+                _total = _table.item_count
+                bar = Bar('Scanning', max=_total)
+                
+                for doc in scan(_table):
+                    did_value = doc[did]
+                    if not check_elastic(context.obj['elastic'], index, eid, did_value):
+                        dynamo_misses += 1
+                        writer.writerow([table, index, eid, did, did_value])
 
-            dynamodb = context.obj['dynamodb']
-            _table = dynamodb.Table(table)
-            _total = _table.item_count
-            bar = Bar('Scanning', max=_total)
-            
-            for doc in scan(_table):
-                did_value = doc[did]
-                if not check_elastic(context.obj['elastic'], index, eid, did_value):
-                    dynamo_misses += 1
-                    writer.writerow([table, index, eid, did, did_value])
+                    bar.next()
 
-                bar.next()
-
-            x.add_row([table, index, eid, did, dynamo_misses, _total])
-            print()
-            print(x)
+                x.add_row([table, index, eid, did, dynamo_misses, _total])
+                print()
+                print(x)
 
 
 @cli.command()
