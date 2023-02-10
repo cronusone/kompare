@@ -48,7 +48,7 @@ test
 (venv) $ kompare es2dyn -eid id -did id -i test-index -t test
 Scanning |################################| 3/3
 +--------------+------------+----------------+---------------+--------+-------+
-| Dynamo Table |  ES Field  | DynamoDB Field | Elastic Index | Misses | Total |
+| Dynamo Table | ES Index   | DynamoDB Field | Elastic Field | Misses | Total |
 +--------------+------------+----------------+---------------+--------+-------+
 |     test     | test-index |       id       |       id      |   2    |   3   |
 +--------------+------------+----------------+---------------+--------+-------+
@@ -56,7 +56,7 @@ Scanning |################################| 3/3
 (venv) $ kompare dyn2es -eid id -did id -i test-index -t test
 Scanning |################################| 1/1
 +--------------+------------+----------------+---------------+--------+-------+
-| Dynamo Table |  ES Field  | DynamoDB Field | Elastic Index | Misses | Total |
+| Dynamo Table |  ES Index  | DynamoDB Field | Elastic Field | Misses | Total |
 +--------------+------------+----------------+---------------+--------+-------+
 |     test     | test-index |       id       |       id      |   0    |   1   |
 +--------------+------------+----------------+---------------+--------+-------+
