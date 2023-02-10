@@ -105,30 +105,22 @@ def check_dynamo(dynamodb, table, did, eid_value, dump):
     return response['Count'] > 0
 
 
-def scan(table, **kwargs):
-    import os
+def scan(table, lastkey, **kwargs):
+    import json
     
-    _lastkey = None
-    
-    if os.path.exists('lasteval.key'):
-        with open('lasteval.key', 'r') as lastkey:
-            _lastkey = lastkey.read()
-            logging.debug("READ Last key %s", _lastkey)
-            
-    if _lastkey:
-        response = table.scan(ExclusiveStartKey=_lastkey, **kwargs)
-        yield from response['Items']
+    if lastkey:
+        print("Resuming from Last Key ", lastkey)
+        response = table.scan(ExclusiveStartKey=lastkey, **kwargs)
     else:
         response = table.scan(**kwargs)
-        yield from response['Items']
     
     while response.get('LastEvaluatedKey'):
         
         with open('lasteval.key', 'w') as lastkey:
-            lastkey.write(response['LastEvaluatedKey'])
+            lastkey.write(json.dumps(response['LastEvaluatedKey']))
             response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'], **kwargs)
             yield from response['Items']
-
+    
 @cli.command(name="check")
 @click.option("-f", "--field", required=False, help="Document id field name")
 @click.option("-v", "--value", required=False, help="ID of document")
@@ -290,7 +282,8 @@ def do_trim(table, docid, idvalue):
 @click.pass_context
 def scan_ids(context, did, table, out, trim):
     """ Scan dynamo table and store id's in a file """
-    import boto3
+    import json
+    import os
     import warnings
     import csv
     from progress.bar import Bar
@@ -307,7 +300,14 @@ def scan_ids(context, did, table, out, trim):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             seen = []
-            for doc in scan(_table, ConsistentRead=False):
+            
+            _lastkey = None
+            if os.path.exists('lasteval.key'):
+                with open('lasteval.key', 'r') as lastkey:
+                    _lastkey = json.loads(lastkey.read())
+                    logging.debug("READ Last key %s", _lastkey)
+            
+            for doc in scan(_table, _lastkey, ConsistentRead=False):
                 did_value = doc[did]
                     
                 if did_value not in seen:
