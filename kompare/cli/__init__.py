@@ -21,18 +21,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 config = configparser.ConfigParser()
-config.read("kompare.ini")
 
 
 @click.group(invoke_without_command=True)
 @click.option("--debug", is_flag=True, default=False, help="Debug switch")
+@click.option("-c", "--configfile", required=False, default="kompare.ini", help="Path to kompare.ini file")
 @click.pass_context
-def cli(context, debug):
+def cli(context, debug, configfile):
     import boto3
 
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
 
+    config.read(configfile)
     if debug:
         logging.basicConfig(
             format="%(asctime)s : %(name)s %(levelname)s : %(message)s",
@@ -74,7 +75,9 @@ def check_elastic(elastic, index, eid, eid_value, dump):
     }
     query['query']['term'] = {}
     query['query']['term'][eid+".keyword"] = eid_value
+    
     results = elastic.search(index=index, body=query)
+    logging.debug("QUERY %s",query)
     logging.debug("check_elastic: %s", results)
     logging.debug("FOUND %s hits", results['hits']['total']['value'])
     result = results['hits']['total']['value'] >= 1
@@ -85,7 +88,13 @@ def check_elastic(elastic, index, eid, eid_value, dump):
         logging.info(r['_source'][eid])
         if dump:
             print(r['_source'])
-    result = results['hits']['hits'][0]['_source'][eid] == eid_value
+            
+    result = False
+    for doc in results['hits']['hits']:
+        if doc['_source'][eid] == eid_value:
+            result = True
+            break
+        
     CACHE[eid_value] = result
         
     logging.debug("check_elastic: returning %s", result)
@@ -125,7 +134,7 @@ def scan(table, lastkey, **kwargs):
 @click.option("-f", "--field", required=False, help="Document id field name")
 @click.option("-v", "--value", required=False, help="ID of document")
 @click.option("-t", "--table", required=False, help="DynamoDB table")
-@click.option("-i", "--index", required=False, help="ElasticSearch index")
+@click.option("-i", "--index", required=False, default="customersAlias", help="ElasticSearch index")
 @click.option("-o", "--out", required=True, default="kompare-check.csv", help="Name of output file")
 @click.option("-in", "--infile", required=False, default=None, help="Scan output file containing dynamoids")
 @click.option("-s", "--source", type=click.Choice(['elastic', 'dynamo'], case_sensitive=False), help="Database source")
@@ -141,10 +150,26 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore") 
+        dynamodb = context.obj['dynamodb']
         
         if not infile:
             if source == 'elastic':
                 print(check_elastic(context.obj['elastic'], index, field, value, dump))
+                if sync:
+                    sync_docs = []
+                    _table = dynamodb.Table(table)
+                    response = _table.query(KeyConditionExpression=Key(field).eq(value))
+                    s_doc = {
+                        "_index": index,
+                        "_type" : "_doc",
+                        "_id"   : value,
+                        "_source": response['Items'][0]
+                    }
+                    if dump:
+                        print(s_doc)
+                    sync_docs.append(s_doc)
+                    helpers.bulk(context.obj['elastic'], sync_docs)
+                    
             if source == 'dynamo':
                 print(check_dynamo(context.obj["dynamodb"], table,field,value, dump))
         else:
@@ -172,11 +197,10 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
                                 r_eid = row[2]
                                 r_did = row[3]
                                 r_value = row[4]
-                                dynamodb = context.obj['dynamodb']
                                 _table = dynamodb.Table(r_table)
                                 logging.debug("ROW %s",row)
                                 logging.debug("Checking elastic")
-                                if not check_elastic(context.obj['elastic'], r_index, r_eid, r_value):
+                                if not check_elastic(context.obj['elastic'], r_index, r_eid, r_value, False):
                                     dynamo_misses += 1
                                     writer.writerow(row)
                                     _docs.append(row)
@@ -204,6 +228,7 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
                                             except Exception as ex:
                                                 logging.error(ex)
                                                 
+                                        logging.debug("Syncing docs %s",sync_docs)
                                         helpers.bulk(context.obj['elastic'], sync_docs)
                                         _docs.clear()
                                     
@@ -234,9 +259,9 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
                                         logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(sync_docs)), _r_index)
                                         
                                         helpers.bulk(context.obj['elastic'], sync_docs)
-                                        
                                 bar.next()
-              
+            else:
+                pass
     
 def do_trim(table, docid, idvalue):
     import dateutil.parser
@@ -275,12 +300,13 @@ def do_trim(table, docid, idvalue):
     print("Keeping latest version",latest[docid], latest['createTimeStamp'])
     
 @cli.command(name="scan")
-@click.option("-did", required=True, help="DynamoDB document id field name")
+@click.option("-did", required=False, help="DynamoDB document id field name")
 @click.option("-t", "--table", required=True, help="DynamoDB table")
-@click.option("-o", "--out", required=True, help="Name of output file")
+@click.option("-o", "--out", required=False, help="Name of output file")
 @click.option("-tr", "--trim", required=False, is_flag=True, default=False, help="Remove older duplicate doc id's")
+@click.option("-s","--size",required=False, is_flag=True, default=False, help="Report only size of table")
 @click.pass_context
-def scan_ids(context, did, table, out, trim):
+def scan_ids(context, did, table, out, trim, size):
     """ Scan dynamo table and store id's in a file """
     import json
     import os
@@ -292,6 +318,10 @@ def scan_ids(context, did, table, out, trim):
     
     _table = dynamodb.Table(table)
     _total = _table.item_count
+    if size:
+        print(_total)
+        return
+    
     bar = Bar('Scanning', max=_total)
     
     with open(out, 'w') as csvfile:
@@ -388,7 +418,7 @@ def dyn2es(context, eid, did, table, index, file, out):
                     for row in idcsv:
                         logging.debug("ROW %s",row)
                         _did = row[2]
-                        if not check_elastic(context.obj['elastic'], index, eid, did):
+                        if not check_elastic(context.obj['elastic'], index, eid, _did, False):
                             dynamo_misses += 1
                             writer.writerow([table, index, eid, did, _did])
                         logging.debug("Checking elastic")
@@ -413,7 +443,7 @@ def dyn2es(context, eid, did, table, index, file, out):
                 
                 for doc in scan(_table):
                     did_value = doc[did]
-                    if not check_elastic(context.obj['elastic'], index, eid, did_value):
+                    if not check_elastic(context.obj['elastic'], index, eid, did_value, False):
                         dynamo_misses += 1
                         writer.writerow([table, index, eid, did, did_value])
 
