@@ -154,11 +154,15 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
         
         if not infile:
             if source == 'elastic':
-                print(check_elastic(context.obj['elastic'], index, field, value, dump))
                 if sync:
                     sync_docs = []
                     _table = dynamodb.Table(table)
                     response = _table.query(KeyConditionExpression=Key(field).eq(value))
+                    
+                    _source = response['Items'][0]
+                    
+                    if 'createdOn' in _source and len(_source['createdOn']) == 0:
+                        _source['createdOn'] = _source['createTimeStamp']
                     s_doc = {
                         "_index": index,
                         "_type" : "_doc",
@@ -169,9 +173,10 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
                         print(s_doc)
                     sync_docs.append(s_doc)
                     helpers.bulk(context.obj['elastic'], sync_docs)
-                    
-            if source == 'dynamo':
-                print(check_dynamo(context.obj["dynamodb"], table,field,value, dump))
+                else:
+                    result = check_elastic(context.obj['elastic'], index, field, value, False)
+                    print(result)
+
         else:
             if infile:
                 with open(infile, 'r') as idfile:
@@ -200,11 +205,14 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
                                 _table = dynamodb.Table(r_table)
                                 logging.debug("ROW %s",row)
                                 logging.debug("Checking elastic")
-                                if not check_elastic(context.obj['elastic'], r_index, r_eid, r_value, False):
-                                    dynamo_misses += 1
-                                    writer.writerow(row)
+                                if not sync:
+                                    print("Checking elastic")
+                                    if not check_elastic(context.obj['elastic'], r_index, r_eid, r_value, False):
+                                        dynamo_misses += 1
+                                        writer.writerow(row)
+                                elif sync:
                                     _docs.append(row)
-                                    if sync and len(_docs) == 100:
+                                    if len(_docs) == 100:
                                         sync_docs = []
                                         for sync_doc in _docs:
                                             try:
@@ -217,48 +225,68 @@ def check(context, field, value, table, index, out, infile, source, sync, dump):
                                                 response = _table.query(
                                                     KeyConditionExpression=Key(_r_did).eq(_r_value)
                                                 )
+                                                _source = response['Items'][0]
+                                                
+                                                if 'createdOn' in _source and len(_source['createdOn']) == 0:
+                                                    _source['createdOn'] = _source['createTimeStamp']
+
                                                 s_doc = {
                                                     "_index": _r_index,
                                                     "_type" : "_doc",
                                                     "_id"   : _r_value,
-                                                    "_source": response['Items'][0]
+                                                    "_source": _source
                                                 }
                                                 sync_docs.append(s_doc)
                                             
                                             except Exception as ex:
+                                                print(ex)
                                                 logging.error(ex)
                                                 
                                         logging.debug("Syncing docs %s",sync_docs)
-                                        helpers.bulk(context.obj['elastic'], sync_docs)
+                                        try:
+                                            print("Syncing...",len(sync_docs))
+                                            helpers.bulk(context.obj['elastic'], sync_docs)
+                                            print("Syncd...",len(sync_docs))
+                                            for sync_doc in sync_docs:
+                                                print("Syncd", sync_doc['_id'])
+                                        except Exception as ex:
+                                            for sync_doc in sync_docs:
+                                                print("Error syncing", sync_doc['_id'], ex)
                                         _docs.clear()
                                     
-                                    if len(_docs):
-                                        sync_docs = []
-                                        for sync_doc in _docs:
-                                            try:
-                                                _r_table = sync_doc[0]
-                                                _r_index = sync_doc[1]
-                                                _r_eid = sync_doc[2]
-                                                _r_did = sync_doc[3]
-                                                _r_value = sync_doc[4]
-                                                logging.debug("Fetching document %s:%s from table %s", _r_did, _r_value, _r_table)
-                                                response = _table.query(
-                                                    KeyConditionExpression=Key(_r_did).eq(_r_value)
-                                                )
-                                                s_doc = {
-                                                    "_index": _r_index,
-                                                    "_type" : "_doc",
-                                                    "_id"   : _r_value,
-                                                    "_source": response['Items'][0]
-                                                }
-                                                sync_docs.append(s_doc)
-                                            
-                                            except Exception as ex:
-                                                logging.error(ex)
-                                                
-                                        logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(sync_docs)), _r_index)
+                            if len(_docs):
+                                sync_docs = []
+                                for sync_doc in _docs:
+                                    try:
+                                        _r_table = sync_doc[0]
+                                        _r_index = sync_doc[1]
+                                        _r_eid = sync_doc[2]
+                                        _r_did = sync_doc[3]
+                                        _r_value = sync_doc[4]
+                                        logging.debug("Fetching document %s:%s from table %s", _r_did, _r_value, _r_table)
+                                        response = _table.query(
+                                            KeyConditionExpression=Key(_r_did).eq(_r_value)
+                                        )
+                                        s_doc = {
+                                            "_index": _r_index,
+                                            "_type" : "_doc",
+                                            "_id"   : _r_value,
+                                            "_source": response['Items'][0]
+                                        }
+                                        sync_docs.append(s_doc)
+                                    
+                                    except Exception as ex:
+                                        logging.error(ex)
                                         
-                                        helpers.bulk(context.obj['elastic'], sync_docs)
+                                logging.debug("Syncing %s documents to elasticsearch index[%s]", str(len(sync_docs)), _r_index)
+                                
+                                try:
+                                    helpers.bulk(context.obj['elastic'], sync_docs)
+                                    for sync_doc in sync_docs:
+                                        print("Syncd", sync_doc['_id'])
+                                except:
+                                    for sync_doc in sync_docs:
+                                        print("Error syncing", sync_doc['_id'])
                                 bar.next()
             else:
                 pass
